@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<title>SS Liquidity Sweep Scanner</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1220;--panel:#121c2d;--line:#26364d;--muted:#91a2ba;--text:#edf3fb;--green:#27c281;--red:#ff657a;--yellow:#f5c451;--blue:#6da8ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+header{padding:22px 16px 14px;background:linear-gradient(135deg,#14233b,#0b1220);border-bottom:1px solid var(--line)}
+h1{font-size:22px;margin:0 0 6px;letter-spacing:.2px}.sub{color:var(--muted);font-size:12px;line-height:1.5}
+main{max-width:900px;margin:auto;padding:14px 12px 40px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.stat,.panel,.signal{background:var(--panel);border:1px solid var(--line);border-radius:13px}
+.stat{padding:12px}.stat small{display:block;color:var(--muted);font-size:11px}.stat b{display:block;font-size:19px;margin-top:4px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+button,select{border:1px solid var(--line);background:#19263a;color:var(--text);border-radius:9px;padding:10px 12px;font-size:13px}
+button.primary{background:#2563eb;border-color:#2563eb}button:disabled{opacity:.5}
+.panel{padding:13px;margin-bottom:12px}.panel h2{font-size:14px;margin:0 0 9px}
+.status{font-size:12px;color:var(--muted);line-height:1.6}.status.error{color:var(--red)}
+.filters{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}
+.filters button{padding:7px 11px}.filters button.active{border-color:var(--blue);background:#203a60}
+.signal{padding:13px;margin-bottom:9px}
+.signalTop{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.symbol{font-size:16px;font-weight:750}.tag{font-size:11px;font-weight:700;border-radius:7px;padding:5px 8px}
+.long{color:#8af0c2;background:#123b30}.short{color:#ffabb6;background:#48202b}
+.details{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+.detail{background:#0d1727;border-radius:8px;padding:8px}.detail small{display:block;color:var(--muted);font-size:10px}.detail b{font-size:12px;display:block;margin-top:4px;word-break:break-all}
+.reason{font-size:12px;color:#bdcbe0;margin-top:10px;line-height:1.5}
+.empty{text-align:center;padding:30px 12px;color:var(--muted);font-size:13px}
+.note{font-size:11px;color:var(--muted);line-height:1.6}
+footer{color:var(--muted);font-size:10px;text-align:center;padding:16px}
+@media(max-width:430px){.details{grid-template-columns:repeat(2,1fr)}h1{font-size:20px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>SS Liquidity Sweep Scanner</h1>
+  <div class="sub">Binance USDT-M Futures · 4H 박스 + 15M 진입 확인<br>유동성 쓸기 → 박스 회복 → 구조 돌파</div>
+</header>
+<main>
+  <div class="stats">
+    <div class="stat"><small>검색 종목</small><b id="count">-</b></div>
+    <div class="stat"><small>LONG 신호</small><b id="longCount" style="color:var(--green)">0</b></div>
+    <div class="stat"><small>SHORT 신호</small><b id="shortCount" style="color:var(--red)">0</b></div>
+  </div>
+  <div class="toolbar">
+    <button class="primary" id="scanBtn">지금 스캔</button>
+    <button id="autoBtn">자동 갱신: ON</button>
+    <select id="universe"><option value="45">거래량 상위 45개</option><option value="30">거래량 상위 30개</option><option value="20">거래량 상위 20개</option><option value="all">전체 USDT 무기한</option></select>
+  </div>
+  <div class="panel">
+    <h2>스캐너 상태</h2>
+    <div class="status" id="status">시작 준비 중...</div>
+    <div class="status" id="updated"></div>
+  </div>
+  <div class="filters">
+    <button class="active" data-filter="ALL">전체</button>
+    <button data-filter="LONG">LONG</button>
+    <button data-filter="SHORT">SHORT</button>
+  </div>
+  <div id="results"><div class="empty">스캔 결과가 여기에 표시됩니다.</div></div>
+  <div class="panel">
+    <h2>신호 판정 기준</h2>
+    <div class="note">
+      ① 4시간봉에서 두 번 이상 반응한 스윙 고점·저점을 묶어 박스 후보를 계산합니다.<br>
+      ② 빠른 감지: 15분봉 마감으로 스윕·회복을 확인한 뒤, 이후 형성된 단기 구조를 실시간 가격이 돌파하면 표시합니다.<br>
+      ③ 봉 마감 확정: 구조 돌파 캔들이 마감된 뒤 별도 신호로 표시합니다.<br>
+      ④ 손절은 스윕 꼬리 끝 바깥, 1차 목표는 1.5R, 최종 목표는 반대편 박스 후보를 참고값으로 표시합니다.<br>
+      ⑤ 자동 갱신은 15초 간격입니다. 빠른 감지 신호는 진행 중인 봉에서 사라질 수 있습니다.
+    </div>
+  </div>
+  <div class="panel">
+    <h2>주의사항</h2>
+    <div class="note">이 도구는 교육·분석용 신호 탐지기이며 자동 주문을 실행하지 않습니다. 박스는 알고리즘으로 추정한 구간이라 영상 속 수동 작도와 다를 수 있습니다. 신호가 없다고 해서 매매 기회가 없는 것은 아니며, API 제한·네트워크 상태에 따라 일부 종목이 누락될 수 있습니다. 선물 고배율 진입 전 반드시 차트에서 확인하고 손절 주문을 직접 설정하세요.</div>
+  </div>
+</main>
+<footer>Public Binance market data · API key not required · Refresh interval 15s</footer>
+<script>
+const API='https://fapi.binance.com';
+let auto=true, timer=null, currentFilter='ALL', busy=false, latest=[];
+const $=id=>document.getElementById(id);
+const fmt=(x)=>Number.isFinite(x)?(x>=1000?x.toLocaleString('en-US',{maximumFractionDigits:2}):x>=1?x.toFixed(4):x.toPrecision(5)):'-';
+async function getJSON(url){
+  const r=await fetch(url,{cache:'no-store'});
+  if(!r.ok) throw new Error('Binance API 오류 '+r.status);
+  return r.json();
+}
+function atr(candles,n=14){
+  let vals=[];
+  for(let i=Math.max(1,candles.length-n);i<candles.length;i++){
+    const c=candles[i],p=candles[i-1];
+    vals.push(Math.max(c.h-c.l,Math.abs(c.h-p.c),Math.abs(c.l-p.c)));
+  }
+  return vals.reduce((a,b)=>a+b,0)/(vals.length||1);
+}
+function parseKlines(raw){return raw.map(k=>({t:k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4],v:+k[5],closeTime:k[6]}));}
+function pivots(cs,side){
+  const out=[];
+  for(let i=2;i<cs.length-2;i++){
+    const x=side==='low'?cs[i].l:cs[i].h;
+    let ok=true;
+    for(let j=i-2;j<=i+2;j++){if(j===i)continue;if(side==='low'?cs[j].l<x:cs[j].h>x){ok=false;break;}}
+    if(ok)out.push({i,price:x,candle:cs[i]});
+  }
+  return out;
+}
+function clusterZones(cs,side){
+  const ps=pivots(cs,side),a=atr(cs,14),tol=Math.max(a*.28,cs.at(-1).c*.0008);
+  const groups=[];
+  for(const p of ps){
+    let g=groups.find(z=>Math.abs(z.center-p.price)<=tol);
+    if(!g){g={items:[],center:p.price};groups.push(g);}
+    g.items.push(p);g.center=g.items.reduce((s,x)=>s+x.price,0)/g.items.length;
+  }
+  return groups.filter(g=>g.items.length>=2).map(g=>{
+    const prices=g.items.map(x=>x.price);
+    const body= g.items.map(x=>side==='low'?Math.min(x.candle.o,x.candle.c):Math.max(x.candle.o,x.candle.c));
+    if(side==='low'){
+      const lower=Math.min(...prices),upper=Math.max(lower,Math.min(...body));
+      return {side,low:lower,high:upper,center:(lower+upper)/2,touches:g.items.length,last:Math.max(...g.items.map(x=>x.i))};
+    }else{
+      const upper=Math.max(...prices),lower=Math.min(upper,Math.max(...body));
+      return {side,low:lower,high:upper,center:(lower+upper)/2,touches:g.items.length,last:Math.max(...g.items.map(x=>x.i))};
+    }
+  }).filter(z=>z.high>z.low);
+}
+function nearestZone(zones,price,side){
+  const eligible=zones.filter(z=>side==='low'?z.center<=price*1.015:z.center>=price*.985);
+  eligible.sort((a,b)=>Math.abs(a.center-price)-Math.abs(b.center-price));
+  return eligible[0]||null;
+}
+
+function findFastSignal(cs,zones,side,livePrice){
+  const end=cs.length-2; // most recent fully closed 15m candle
+  if(end<20 || !Number.isFinite(livePrice)) return null;
+  const candidates=zones.filter(z=>z.touches>=2);
+  for(let s=end-1;s>=Math.max(5,end-12);s--){
+    const sweep=cs[s];
+    const z=nearestZone(candidates,sweep.c,side);
+    if(!z) continue;
+    const swept=side==='low'
+      ? (sweep.l<z.low && sweep.c>=z.low && sweep.c<=z.high)
+      : (sweep.h>z.high && sweep.c<=z.high && sweep.c>=z.low);
+    if(!swept) continue;
+    const after=cs.slice(s+1,end+1);
+    if(after.length<1) continue;
+    const trigger=side==='low'?Math.max(...after.map(x=>x.h)):Math.min(...after.map(x=>x.l));
+    const crossed=side==='low'?livePrice>trigger:livePrice<trigger;
+    if(!crossed) continue;
+    const stop=side==='low'?sweep.l:sweep.h;
+    const entry=livePrice;
+    const risk=side==='low'?entry-stop:stop-entry;
+    if(risk<=0 || risk/entry>.035) continue;
+    const tp1=side==='low'?entry+1.5*risk:entry-1.5*risk;
+    return {side:side==='low'?'LONG':'SHORT',mode:'FAST',zone:z,sweep,
+      confirm:cs[end],entry,stop,tp1,risk,trigger};
+  }
+  return null;
+}
+
+function findSignal(cs,zones,side){
+  // Only fully closed 15m candles are used.
+  const end=cs.length-2;
+  if(end<20)return null;
+  const candidates=zones.filter(z=>z.touches>=2);
+  for(let s=end-8;s>=Math.max(5,end-35);s--){
+    const c=cs[s];
+    const z=nearestZone(candidates,c.c,side);
+    if(!z)continue;
+    const swept=side==='low'?(c.l<z.low && c.c>=z.low && c.c<=z.high):(c.h>z.high && c.c<=z.high && c.c>=z.low);
+    if(!swept)continue;
+    const stop=side==='low'?c.l:c.h;
+    for(let k=s+1;k<=Math.min(end,s+6);k++){
+      const prior=cs.slice(Math.max(s+1,k-4),k);
+      if(prior.length<2)continue;
+      const trigger=side==='low'?Math.max(...prior.map(x=>x.h)):Math.min(...prior.map(x=>x.l));
+      const confirmed=side==='low'?cs[k].c>trigger:cs[k].c<trigger;
+      if(!confirmed)continue;
+      const entry=cs[k].c, risk=side==='low'?entry-stop:stop-entry;
+      if(risk<=0 || risk/entry>.035)continue;
+      const tp1=side==='low'?entry+1.5*risk:entry-1.5*risk;
+      return {side:side==='low'?'LONG':'SHORT',zone:z,sweep:c,confirm:cs[k],entry,stop,tp1,risk,trigger};
+    }
+  }
+  return null;
+}
+async function scanOne(symbol,price){
+  const [h4raw,m15raw]=await Promise.all([
+    getJSON(`${API}/fapi/v1/klines?symbol=${symbol}&interval=4h&limit=150`),
+    getJSON(`${API}/fapi/v1/klines?symbol=${symbol}&interval=15m&limit=100`)
+  ]);
+  const h4=parseKlines(h4raw),m15=parseKlines(m15raw);
+  const lows=clusterZones(h4,'low'),highs=clusterZones(h4,'high');
+  const candidates=[
+    findFastSignal(m15,lows,'low',price),
+    findFastSignal(m15,highs,'high',price),
+    findSignal(m15,lows,'low'),
+    findSignal(m15,highs,'high')
+  ].filter(Boolean);
+  const signals=[];
+  for(const sig of candidates){
+    const opp=sig.side==='LONG'?nearestZone(highs,price,'high'):nearestZone(lows,price,'low');
+    sig.symbol=symbol;sig.price=price;sig.target=opp?opp.center:null;
+    sig.time=new Date(sig.confirm.t).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+    if(!signals.some(x=>x.side===sig.side&&x.mode===sig.mode))signals.push(sig);
+  }
+  return signals;
+}
+async function pool(items,limit,fn){
+  let i=0,results=[];
+  const workers=Array.from({length:limit},async()=>{
+    while(i<items.length){const idx=i++;try{results[idx]=await fn(items[idx]);}catch(e){results[idx]=null;}}
+  });
+  await Promise.all(workers);return results;
+}
+function render(){
+  const rows=latest.filter(x=>currentFilter==='ALL'||x.side===currentFilter);
+  $('longCount').textContent=latest.filter(x=>x.side==='LONG').length;
+  $('shortCount').textContent=latest.filter(x=>x.side==='SHORT').length;
+  if(!rows.length){$('results').innerHTML='<div class="empty">현재 SS 진입 조건이 없습니다.<br>빠른 감지와 봉 마감 확정 신호를 함께 찾고 있습니다.</div>';return;}
+  $('results').innerHTML=rows.map(x=>{
+    const final=x.target|| (x.side==='LONG'?x.entry+3*x.risk:x.entry-3*x.risk);
+    return `<article class="signal">
+      <div class="signalTop"><div class="symbol">${x.symbol.replace('USDT','/USDT')}</div><span style="display:flex;gap:5px;align-items:center"><span class="tag" style="background:${x.mode==='FAST'?'#493a16':'#19344e'};color:${x.mode==='FAST'?'#ffdc83':'#9bc8ff'}">${x.mode==='FAST'?'빠른 감지':'봉 마감 확정'}</span><span class="tag ${x.side==='LONG'?'long':'short'}">${x.side}</span></span></div>
+      <div class="reason">4H 박스 ${x.zone.touches}회 반응 · 15M 유동성 스윕 및 회복 · 구조 돌파 ${x.mode==='FAST'?'실시간 감지':'종가 확인'}<br>기준 캔들: ${x.time}</div>
+      <div class="details">
+        <div class="detail"><small>현재가</small><b>${fmt(x.price)}</b></div>
+        <div class="detail"><small>진입 참고가</small><b>${fmt(x.entry)}</b></div>
+        <div class="detail"><small>손절 참고가</small><b>${fmt(x.stop)}</b></div>
+        <div class="detail"><small>1차 익절 (1.5R)</small><b>${fmt(x.tp1)}</b></div>
+        <div class="detail"><small>최종 목표 참고</small><b>${fmt(final)}</b></div>
+        <div class="detail"><small>박스 범위</small><b>${fmt(x.zone.low)} – ${fmt(x.zone.high)}</b></div>
+      </div>
+      <div class="reason">${x.mode==='FAST'?'빠른 감지 신호는 진행 중인 15분봉에서 조건이 무효화되면 사라질 수 있습니다.':'봉 마감 확정 신호입니다.'} 실제 주문 전 현재가와 손익비를 다시 확인하세요.</div>
+    </article>`;
+  }).join('');
+}
+async function runScan(){
+  if(busy)return;busy=true;$('scanBtn').disabled=true;
+  $('status').className='status';$('status').textContent='거래량 상위 종목과 캔들 데이터를 불러오는 중...';
+  try{
+    const [info,tickers]=await Promise.all([
+      getJSON(`${API}/fapi/v1/exchangeInfo`),
+      getJSON(`${API}/fapi/v1/ticker/24hr`)
+    ]);
+    const allowed=new Set(info.symbols.filter(s=>s.contractType==='PERPETUAL'&&s.quoteAsset==='USDT'&&s.status==='TRADING').map(s=>s.symbol));
+    const vol=tickers.filter(t=>allowed.has(t.symbol)).sort((a,b)=>+b.quoteVolume- +a.quoteVolume);
+    const n=$('universe').value==='all'?vol.length:+$('universe').value;
+    const symbols=vol.slice(0,n).map(t=>t.symbol);$('count').textContent=symbols.length;
+    $('status').textContent=`${symbols.length}개 종목 분석 중... (동시 요청 5개)`;
+    const priceMap=new Map(tickers.map(t=>[t.symbol,+t.lastPrice]));
+    const found=await pool(symbols,8,sym=>scanOne(sym,priceMap.get(sym)||NaN));
+    latest=found.flat().filter(Boolean).sort((a,b)=>{
+      if(a.mode!==b.mode)return a.mode==='FAST'?-1:1;
+      return b.confirm.t-a.confirm.t;
+    });
+    render();
+    $('status').textContent=`스캔 완료 · ${symbols.length}개 중 ${latest.length}개 진입 확인 신호`;
+    $('updated').textContent='마지막 업데이트: '+new Date().toLocaleString('ko-KR');
+  }catch(e){
+    $('status').className='status error';
+    $('status').textContent='스캔 실패: '+e.message+' · 잠시 후 다시 시도하세요.';
+  }finally{busy=false;$('scanBtn').disabled=false;}
+}
+function setAuto(v){auto=v;$('autoBtn').textContent='자동 갱신: '+(auto?'ON':'OFF');if(timer)clearInterval(timer);timer=auto?setInterval(runScan,15000):null;}
+$('scanBtn').addEventListener('click',runScan);
+$('autoBtn').addEventListener('click',()=>setAuto(!auto));
+$('universe').addEventListener('change',runScan);
+document.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click',()=>{
+  currentFilter=b.dataset.filter;document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===b));render();
+}));
+runScan();setAuto(true);
+</script>
+</body>
+</html>
